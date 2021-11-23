@@ -2,7 +2,7 @@ tic;
 clc;
 clear all;
 ip = fopen('ip.m','r++');
-op = fopen('IeffDLF_33_Radial_op.m','w++');
+op = fopen('op_exp5.m','w++');
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%  Read   BASIC DATA    %%%%%%%%%%%%%%%
