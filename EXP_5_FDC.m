@@ -1,7 +1,7 @@
 clc
 clear all
 ip=fopen('NRinput.m','r++');
-op=fopen('NRoutput.m','w++');
+op=fopen('FDCoutput.m','w++');
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%% Read BASIC DATA %%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -23,6 +23,7 @@ x = linedata(:,5);
 ycp = complex(0,linedata(:,6));
 ycq = complex(0,linedata(:,7));
 tap = linedata(:,8);
+%%%%%%% Compensation %%%%%%%%
 shunt = fscanf(ip,'%f',[n 1]);
 shunt = complex(0,shunt');
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -123,14 +124,111 @@ for i = 1:n
  qmininj(i) = qmin(i) - qload(i);
  qmaxinj(i) = qmax(i)- qload(i);
 end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%% Formation of B1 Matrix %%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%% Initilization of B1 matrix to Zeros
+for i = 1:n
+ for j = 1:n
+ B1(i,j) = 0.0;
+ end
+end
+%%%% Updation of B1 matrix
+for k = 1:nline
+ bline(k) = 1/x(k);
+end
+for k = 1:nline
+ p = lp(k);
+ q = lq(k);
+ B1(p,p) = B1(p,p) + bline(k);
+ B1(q,q) = B1(q,q) + bline(k);
+ B1(p,q) = B1(p,q) - bline(k);
+ B1(q,p) = B1(q,p) - bline(k);
+end
+B1(nslack,nslack) = 10^20; %%% Slack Bus treatment
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%% Chelosky Method for B1 %%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+B1(1,1) = sqrt(B1(1,1));
+for j = 2:n
+ B1(1,j) = B1(1,j)/B1(1,1);
+ B1(j,1) = B1(1,j);
+end
+for i = 2:n
+ sum = 0;
+ for k = 1:i-1
+ sum = sum + B1(i,k)*B1(i,k);
+ end
+ B1(i,i) = sqrt(B1(i,i)-sum);
+ for j = i+1:n
+ sum = 0;
+ for k = 1:i-1
+ sum = sum + B1(i,k)*B1(k,j);
+ end
+ B1(i,j) = (B1(i,j)-sum)/B1(i,i);
+ B1(j,i) = B1(i,j);
+ end
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%% Formation of B2 Matrix %%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%% Initilization of B2 matrix to Zeros
+for i = 1:n
+ for j = 1:n
+ B2(i,j) = 0.0;
+ end
+end
+%%%%% Updation of B2 matrix
+for p = 1:n
+ B2(p,p) = -imag(ypp(p));
+end
+for p = 1:n
+
+ jstart = itagf(p);
+ jstop = itagto(p);
+
+ for j = jstart:jstop
+ q = adjq(j);
+ B2(p,q) = B2(p,q) - imag(ypq(j));
+ end
+end
+B2(nslack,nslack) = 10^20; %%% Slack Bus treatment
+for p = 1:n
+ if (itype(p) == 2)
+ B2(p,p) = 10^20; %%%% PV bus treatment
+ end
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%% Chelosky Method for B2 %%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+B2(1,1) = sqrt(B2(1,1));
+for j = 2:n
+ B2(1,j) = B2(1,j)/B2(1,1);
+ B2(j,1) = B2(1,j);
+end
+for i = 2:n
+ sum = 0;
+ for k = 1:i-1
+ sum = sum + B2(i,k)*B2(i,k);
+ end
+ B2(i,i) = sqrt(B2(i,i)-sum);
+ for j = i+1:n
+ sum = 0;
+ for k = 1:i-1
+ sum = sum + B2(i,k)*B2(k,j);
+ end
+ B2(i,j) = (B2(i,j)-sum)/B2(i,i);
+ B2(j,i) = B2(i,j);
+ end
+end
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%% Assume Flat Voltage Start %%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-E(nslack) = complex(vsp(1),0);
+E(nslack) = complex(vsp(1),0); %%%% For Slack bus
 for i = 2:n
- E(i) = complex(1,0);
+ E(i) = complex(1,0); % For all other buses
 end
-%%%% Find the Magnitude and Phase angle of Voltages %%%%%%%%%%%
+%%%% Find the Magnitude and Phase angle of Bus Voltages %%%%%%%%%%%
 for i = 1:n
  v(i) = abs(E(i));
  delta(i) = angle(E(i));
@@ -138,10 +236,14 @@ end
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%% Iterative Process Start %%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-for iter = 1:itermax
+for iter = 0:itermax
 
- deltapmax = 0;
- deltaqmax = 0;
+
+ %%%%%%%%% One delta operation %%%%%%%%%%%%%
+
+
+ deltapmaxd = 0;
+ deltaqmaxd = 0;
 
  %%%%% Calculation of Pcal and Qcal %%%%%%%
 
@@ -164,7 +266,8 @@ for iter = 1:itermax
  qcal(i) = imag(scal);
 
  end
- %%%%%% Calculation of DelP, DelQ and other madifications to
+
+ %%%%%% Calculation of DelP, DelQ and other madifications to Mismatch-
  %%%%%% Vector
 
  for i = 1:n
@@ -173,177 +276,200 @@ for iter = 1:itermax
  delq(i) = qinj(i) - qcal(i);
 
 
- delp(nslack) = 0;
- delq(nslack) = 0;
+ delp(nslack) = 0; %% For Slack bus
+ delq(nslack) = 0; %% For Slack bus
 
  if (itype(i) == 2)
- delq(i) = 0;
+ delq(i) = 0; %% For PV bus
  end
 
  %%%% Find the maximum DelP and DelQ values %%%%%
 
- if (abs(delp(i)) > deltapmax)
- deltapmax = abs(delp(i));
+ if (abs(delp(i)) > deltapmaxd)
+ deltapmaxd = abs(delp(i));
  end
 
- if (abs(delq(i)) > deltaqmax)
- deltaqmax = abs(delq(i));
+ if (abs(delq(i)) > deltaqmaxd)
+ deltaqmaxd = abs(delq(i));
  end
  end
 
- ideltapmax(iter) = deltapmax;
- ideltaqmax(iter) = deltaqmax;
+ iter
+ deltapmaxd
+ deltaqmaxd
 
  %%%%% Checking for convergence Criteria %%%%%%%%
 
- if (deltapmax <= epsilon && deltaqmax <= epsilon)
+ if (deltapmaxd <= epsilon && deltaqmaxd <= epsilon)
 
- fprintf(op,'Problem converged in %d iterations\n\n',iter);
+ fprintf(op,'\n\nProblem converged in %d iterations\n\n',iter);
+ fprintf(op,'\n');
  break;
 
  end
 
- %%%%% Initilization of Jacobian Matrix %%%%%%%%%%%
-
- for i = 1:(2*n)
- for j = 1:(2*n)
- A(i,j) = 0.0;
- end
- end
- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
- %%%%%% Updation of Jacobian Matrix %%%%%%%%%
- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
- %%%%% Diagonal Elements of Jacobian %%%%%%%%
+ %%%%%%%%% Solve for Delta %%%%%%%%%%%%%
 
  for i = 1:n
- qp = qcal(i);
- bpp = imag(ypp(i));
- v2 = v(i)*v(i);
- pp = pcal(i);
- gpp = real(ypp(i));
- A(i,i) = -qp - bpp*v2; %% H - SUB MATRIX
- A(i,i+n) = pp + gpp*v2; %% N - SUB MATRIX
- A(i+n,i) = pp - gpp*v2; %% M - SUB MATRIX
- A(i+n,i+n) = qp - bpp*v2; %% L - SUBMATRIX
+ delp1(i) = delp(i)/v(i);
  end
 
- %%%%% Off - Diagonal Elements of Jacobian %%%%%%%%
+ del1(1) = delp(1)/B1(1,1);
 
- for p = 1:n
-
- jstart = itagf(p);
- jstop = itagto(p);
-
- for j = jstart:jstop
-
- q = adjq(j);
-
- ep = real(E(p));
- eq = real(E(q));
- fp = imag(E(p));
- fq = imag(E(q));
-
- term2 = fp*eq - ep*fq;
- term1 = ep*eq + fp*fq;
-
- gpq = real(ypq(j));
-
- bpq = imag(ypq(j));
-
- A(p,q) = gpq*term2 - bpq*term1; %% H - SUB MATRIX
- A(p,q+n) = gpq*term1 + bpq*term2; %% N - SUB MATRIX
- A(p+n,q) = -A(p,q+n); %% M - SUB MATRXI
- A(p+n,q+n) = A(p,q); %% L - SUB MATRIX
-
- end
- end
-
- %%%%% Setting the Slack bus elements to ZERO %%%%%%%%%
-
- A(nslack,nslack) = 10^20; %% H - SUB MATRIX
- A(n+nslack,n+nslack) = 10^20; %% L - SUB MATRIX
-
- %%%% Setting the PV bus elements to ZERO %%%%%%%%%
-
- for i = 1:n
- if (itype(i) == 2)
- A(i+n,i+n) = 10^20;
- end
- end
-
- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
- %%%%% Setting to DelPQ Vector %%%%%%
- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
- for i = 1:n
- delpq(i) = delp(i);
- delpq(i+n) = delq(i);
- end
-
- %%%%%%%%% Gauss Elimination Technique %%%%%%%%%%%%%%%
- %%%%%% [M] = [J] [X] %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
- for i = 1:(2*n)
- fact = (1/A(i,i));
- A(i,i) = 1;
- for j = (i+1):(2*n)
- A(i,j) = A(i,j)*fact;
- end
- delpq(i) = delpq(i)*fact;
-
- for k = (i+1):(2*n)
- fact1 = A(k,i);
- A(k,i) = 0;
- for j = (i+1):(2*n)
- A(k,j) = A(k,j) - A(i,j)*fact1;
- end
- delpq(k) = delpq(k) - fact1*delpq(i);
- end
- end
-
- delx(2*n) = delpq(2*n);
- 
- for i = ((2*n)-1):-1:1
+ for i = 2:n
  sum = 0;
- for j = (i+1):(2*n)
- sum = sum+A(i,j)*delx(j);
+ for j = 1:i-1
+ sum = sum + B1(i,j)*del1(j);
  end
- delx(i) = delpq(i) - sum;
+ del1(i) = (delp(i)-sum)/B1(i,i);
  end
 
- %%%%%%%%% Updation of Bus Voltages %%%%%%%%%%%
+ delx(n) = del1(n)/B1(n,n);
+
+ for i = n-1:-1:1
+ sum = 0;
+ for j = i+1:n
+ sum = sum + B1(i,j)*delx(j);
+ end
+ delx(i) = (del1(i)-sum)/B1(i,i);
+ end
+
+ %%%%%%% Delta & Voltage Updation %%%%%%%%%%%
 
  for i = 1:n
  delta(i) = delta(i) + delx(i);
- v(i) = v(i) + delx(i+n)*v(i);
- enew(i) = v(i)*cos(delta(i));
- fnew(i) = v(i)*sin(delta(i));
- E(i) = complex(enew(i),fnew(i));
+ e1(i) = v(i)*cos(delta(i));
+ f1(i) = v(i)*sin(delta(i));
+ E(i) = complex(e1(i),f1(i));
  end
 
- %%%%% If problem has not Converged then print the following %%%%%%%%%
+
+
+ %%%%%%% First Half Iteration is over %%%%%%%
+
+
+ %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+ iter = iter + 0.5;
+
+ %%%%%%%%% One V operation %%%%%%%%%%%%%
+
+ deltapmaxv = 0;
+ deltaqmaxv = 0;
+
+ %%%%% Calculation of Pcal and Qcal %%%%%%%
+
+ for i = 1:n
+
+ ical = ypp(i)*E(i);
+
+ jstart = itagf(i);
+ jstop = itagto(i);
+
+ for j = jstart:jstop
+ q = adjq(j);
+ ical = ical + ypq(j)*E(q);
+ end
+
+ scal = E(i)*conj(ical);
+
+ pcal(i) = real(scal);
+
+ qcal(i) = imag(scal);
+
+ end
+
+ %%%%%% Calculation of DelP, DelQ and other madifications tom Mismatch-
+ %%%%%% Vector
+
+ for i = 1:n
+
+ delp(i) = pinj(i) - pcal(i);
+ delq(i) = qinj(i) - qcal(i);
+
+
+ delp(nslack) = 0; %% For Slack Bus
+ delq(nslack) = 0; %% For Slack Bus
+
+ if (itype(i) == 2)
+ delq(i) = 0; %% For PV Bus
+ end
+
+ %%%% Find the maximum DelP and DelQ values %%%%%
+
+ if (abs(delp(i)) > deltapmaxv)
+ deltapmaxv = abs(delp(i));
+ end
+
+ if (abs(delq(i)) > deltaqmaxv)
+ deltaqmaxv = abs(delq(i));
+ end
+ end
+
+ iter
+ deltapmaxv
+ deltaqmaxv
+
+ %%%%% Checking for convergence Criteria %%%%%%%%
+
+ if (deltapmaxv <= epsilon && deltaqmaxv <= epsilon)
+
+ fprintf(op,'\n\nProblem converged in %d iterations\n\n',iter);
+ fprintf(op,'\n');
+ break;
+
+ end
+
+ %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+ %%%% Solve the Equation for DEL V %%%%%%%%%%%%%%
+ %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+ for i = 1:n
+ delq1(i) = delq(i)/v(i);
+ end
+
+ del2(1) = delq(1)/B2(1,1);
+
+ for i = 2:n
+ sum = 0;
+ for j = 1:i-1
+ sum = sum + B2(i,j)*del2(j);
+ end
+ del2(i) = (delq(i)-sum)/B2(i,i);
+ end
+
+ dely(n) = del2(n)/B2(n,n);
+
+ for i = n-1:-1:1
+ sum = 0;
+ for j = i+1:n
+ sum = sum + B2(i,j)*dely(j);
+ end
+ dely(i) = (del2(i)-sum)/B2(i,i);
+ end
+
+ %%%%%%%%%% Voltage updation %%%%%%%%%%5
+
+ for i = 1:n
+ v(i) = v(i) + dely(i);
+ e2(i) = v(i)*cos(delta(i));
+ f2(i) = v(i)*sin(delta(i));
+ E(i) = complex(e2(i),f2(i));
+ end
 
  if (iter == itermax)
- fprintf(op,'Problem not converged');
+ fprintf(op,'Problem not converged in %d iterations',itermax);
+ break;
  end
 
+
 end
-%%%%%%%%%%%%%%% Convergence Plot %%%%%%%%%%%%%%%%
-figure(1)
-plot(ideltapmax)
-hold on
-plot(ideltaqmax)
-title('Convergence Plot')
-xlabel('Number of Iterations')
-ylabel('DeltaPmax & DeltaQmax')
-legend('deltapmax','deltaqmax')
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%% Calculation of Line Flows %%%%%%%%%%%%%%
 %%%%%%%%%%%%% Calculation of Line LOSSES %%%%%%%%%%%%%
 %%%%%%%%%%%%% Calculation of Slack Bus Power %%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-TSloss=0;
 for k = 1:nline
  p = lp(k);
  q = lq(k);
@@ -355,7 +481,11 @@ for k = 1:nline
  Sqp(k) = E(q)*conj(Iqp); %% Line Flow from Q to P
 
  Sloss(k) = Spq(k) + Sqp(k); %%% Line Loss
- TSloss = TSloss + Sloss(k);
+end
+%%%%%%%%%%%%%% Calculation of System Loss %%%%%%%%
+System_Loss = 0;
+for k = 1:nline
+ System_Loss = System_Loss + Sloss(k);
 end
 %%%%%%%%%%%%% Calculation of Slack Bus Power %%%%%%%%%%
 Jstart = itagf(nslack);
@@ -376,14 +506,16 @@ qgen(nslack) = qinj(nslack) + qload(nslack);
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
 %%% Print the Bus voltages
+fprintf(op,' Bus Voltages \n\n');
 for i = 1:n
  fprintf(op,' %d %f %f\n',i,abs(E(i)),angle(E(i)));
 end
 fprintf(op,'\n\n');
 %%% Print the Line flows
-for i=1:nline
- fprintf(op,'Spq(%d)=\t',i);
- if imag(Spq(i))<0
+fprintf(op,' Line Flows \n\n');
+for i = 1:nline
+ fprintf(op,'Spq(%d) = \t',i);
+ if imag(Spq(1)<0)
  fprintf(op,'\t%f-i(%f)\t',real(Spq(i)),abs(imag(Spq(i))));
  else
  fprintf(op,'\t%f+i(%f)\t',real(Spq(i)),abs(imag(Spq(i))));
@@ -391,9 +523,9 @@ for i=1:nline
  fprintf(op,'\n');
 end
 fprintf(op,'\n');
-for i=1:nline
- fprintf(op,'Sqp(%d)=\t',i);
- if imag(Sqp(i))<0
+for i = 1:nline
+ fprintf(op,'Sqp(%d) = \t',i);
+ if imag(Sqp(1)<0)
  fprintf(op,'\t%f-i(%f)\t',real(Sqp(i)),abs(imag(Sqp(i))));
  else
  fprintf(op,'\t%f+i(%f)\t',real(Sqp(i)),abs(imag(Sqp(i))));
@@ -401,23 +533,23 @@ for i=1:nline
  fprintf(op,'\n');
 end
 fprintf(op,'\n');
-%%% Print the Line flows
+%%% Print the Line Loss
+fprintf(op,' Line Losses \n\n');
 for i = 1:nline
- fprintf(op,'Sloss(%d)=\t',i);
- if imag(Sloss(i))<0
+ fprintf(op,'Sloss(%d) = \t',i);
+ if imag(Sloss(1)<0)
  fprintf(op,'\t%f-i(%f)\t',real(Sloss(i)),abs(imag(Sloss(i))));
  else
  fprintf(op,'\t%f+i(%f)\t',real(Sloss(i)),abs(imag(Sloss(i))));
  end
  fprintf(op,'\n');
 end
-if imag(TSloss)<0
- fprintf(op,'TotalSloss=\t\t%f-i(%f)\t',real(TSloss),imag(TSloss));
-else
- fprintf(op,'TotalSloss=\t\t%f+i(%f)\t',real(TSloss),imag(TSloss));
-end
+fprintf(op,'\n\n');
+%%%%%%%%%%%%%% Calculation of System Loss %%%%%%%%
+fprintf(op,'Total System Loss = %f + %f\t',real(System_Loss),imag(System_Loss));
 fprintf(op,'\n\n');
 %%%%%%%% Slack Bus Power
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-fprintf(op,'Pslack = %f\t',pgen(nslack));
-fprintf(op,'Qslack = %f\t',qgen(nslack));
+fprintf(op,'Slack Bus Power = %f + %f\t',pgen(nslack),qgen(nslack));
+fprintf(op,'\n\n');
+toc
